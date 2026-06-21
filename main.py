@@ -666,66 +666,6 @@ def tab_velocity(df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# custom css for dark theme polish
-# ---------------------------------------------------------------------------
-
-
-def inject_css() -> None:
-    """Inject custom CSS to enhance visual theme."""
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-        html, body, [class*="st-"] {
-            font-family: 'Inter', sans-serif;
-        }
-
-        /* metric cards */
-        [data-testid="stMetric"] {
-            background: rgba(30, 30, 46, 0.65);
-            border: 1px solid rgba(250, 204, 21, 0.18);
-            border-radius: 12px;
-            padding: 16px 20px;
-            backdrop-filter: blur(8px);
-        }
-        [data-testid="stMetricLabel"] {
-            font-size: 0.82rem;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-            opacity: 0.75;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.65rem;
-            font-weight: 700;
-            color: #facc15;
-        }
-
-        /* tabs */
-        button[data-baseweb="tab"] {
-            font-weight: 600;
-            font-size: 0.95rem;
-            letter-spacing: 0.02em;
-        }
-
-        /* dataframe */
-        [data-testid="stDataFrame"] {
-            border-radius: 10px;
-            overflow: hidden;
-        }
-
-        /* sidebar */
-        section[data-testid="stSidebar"] {
-            background: rgba(15, 15, 25, 0.85);
-            backdrop-filter: blur(12px);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -738,8 +678,6 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
-
-    inject_css()
 
     # header
     st.markdown(
