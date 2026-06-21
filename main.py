@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
+from statsmodels.tsa.seasonal import STL
 
 # ---------------------------------------------------------------------------
 # constants
@@ -88,7 +90,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Render sidebar controls and return (oblast_df, full_filtered_df)."""
-    st.sidebar.markdown("## 🇺🇦 Filters")
+    st.sidebar.markdown("## :material/filter_alt: Filters")
 
     # date range
     min_date = df["date"].min()
@@ -110,10 +112,11 @@ def build_sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     oblast_options = sorted(
         df.loc[df["level"] == "oblast", "oblast"].dropna().unique()
     )
+    default_oblasts = [o for o in oblast_options if o not in ("Donetska oblast", "Luhanska oblast")]
     selected_oblasts: list[str] = st.sidebar.multiselect(
         "Oblasts",
         options=oblast_options,
-        default=oblast_options,
+        default=default_oblasts,
     )
 
     # oblast-level slice for tab-1 kpis
@@ -366,144 +369,300 @@ def tab_temporal(oblast_df: pd.DataFrame) -> None:
     )
     st.plotly_chart(fig_hm, use_container_width=True)
 
-    # --- stl placeholder ---
+    # --- stl decomposition ---
     st.markdown("### Time Series Decomposition (STL)")
-    st.info(
-        "📈 **Placeholder** — Weekly / monthly STL decomposition will appear "
-        "here once `statsmodels.tsa.seasonal.STL` is wired into the pipeline. "
-        "The grouped weekly alert counts are pre-computed and ready for decomposition.",
-        icon="🔬",
+
+    stl_period = st.radio(
+        "Aggregation period",
+        options=["Weekly", "Monthly"],
+        horizontal=True,
+        key="stl_period",
     )
-    weekly = (
+    rule = "W" if stl_period == "Weekly" else "MS"
+
+    ts = (
         oblast_df.set_index("started_at")
-        .resample("W")
+        .resample(rule)
         .size()
         .rename("alerts")
-        .reset_index()
     )
-    fig_w = px.line(
-        weekly,
-        x="started_at",
-        y="alerts",
-        color_discrete_sequence=[COLOURS["primary"]],
-        labels={"started_at": "Week", "alerts": "Alerts"},
-    )
-    fig_w.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=300,
-        margin=dict(l=0, r=0, t=10, b=10),
-    )
-    st.plotly_chart(fig_w, use_container_width=True)
+    ts.index = ts.index.tz_localize(None)  # stl needs tz-naive index
+    ts = ts.asfreq(rule, fill_value=0)  # fill gaps to keep regular freq
+
+    # stl needs at least 2 full cycles; seasonal period = ~52 weeks or 12 months
+    seasonal_period = 52 if rule == "W" else 12
+    if len(ts) >= 2 * seasonal_period + 1:
+        result = STL(ts, period=seasonal_period, robust=True).fit()
+
+        fig_stl = make_subplots(
+            rows=4,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=("Observed", "Trend", "Seasonal", "Residual"),
+        )
+        fig_stl.add_trace(
+            go.Scatter(x=ts.index, y=result.observed, mode="lines",
+                       line=dict(color=COLOURS["primary"], width=1.2), showlegend=False),
+            row=1, col=1,
+        )
+        fig_stl.add_trace(
+            go.Scatter(x=ts.index, y=result.trend, mode="lines",
+                       line=dict(color=COLOURS["secondary"], width=2), showlegend=False),
+            row=2, col=1,
+        )
+        fig_stl.add_trace(
+            go.Scatter(x=ts.index, y=result.seasonal, mode="lines",
+                       line=dict(color=COLOURS["accent"], width=1.2), showlegend=False),
+            row=3, col=1,
+        )
+        fig_stl.add_trace(
+            go.Scatter(x=ts.index, y=result.resid, mode="markers",
+                       marker=dict(color=COLOURS["danger"], size=3, opacity=0.6), showlegend=False),
+            row=4, col=1,
+        )
+        fig_stl.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=720,
+            margin=dict(l=0, r=0, t=30, b=10),
+        )
+        st.plotly_chart(fig_stl, use_container_width=True)
+    else:
+        st.warning(
+            f"Not enough data for STL decomposition at {stl_period.lower()} granularity "
+            f"(need ≥ {2 * seasonal_period + 1} periods, have {len(ts)})."
+        )
+        # fallback: simple time series line
+        fig_w = px.line(
+            ts.reset_index(),
+            x="started_at",
+            y="alerts",
+            color_discrete_sequence=[COLOURS["primary"]],
+            labels={"started_at": stl_period, "alerts": "Alerts"},
+        )
+        fig_w.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=300,
+            margin=dict(l=0, r=0, t=10, b=10),
+        )
+        st.plotly_chart(fig_w, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# tab 3 — lead-time & velocity vectors
+# tab 3 — lead-time & velocity vectors (averaged across all waves)
 # ---------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner="Computing wave propagation statistics …")
+def _compute_wave_stats(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Compute per-wave lead-time lags and aggregate across all multi-oblast waves."""
+    # only consider oblast-level alerts for cleaner inter-region analysis
+    odf = df[df["level"] == "oblast"].copy()
+
+    # per-wave: earliest alert = wave_start
+    wave_starts = odf.groupby("wave_id")["started_at"].min().rename("wave_start")
+    odf = odf.merge(wave_starts, on="wave_id")
+    odf["lead_time_lag_mins"] = (
+        (odf["started_at"] - odf["wave_start"]).dt.total_seconds() / 60.0
+    )
+
+    # earliest alert per oblast per wave
+    per_wave_oblast = (
+        odf.groupby(["wave_id", "oblast"], as_index=False)
+        .agg(lag_mins=("lead_time_lag_mins", "min"))
+    )
+
+    # filter to waves that hit >= 2 oblasts (meaningful propagation)
+    wave_oblast_counts = per_wave_oblast.groupby("wave_id")["oblast"].nunique()
+    multi_waves = wave_oblast_counts[wave_oblast_counts >= 2].index
+    per_wave_oblast = per_wave_oblast[per_wave_oblast["wave_id"].isin(multi_waves)]
+    n_waves = int(len(multi_waves))
+
+    # aggregate: mean, median, p25, p75 lag per oblast across all waves
+    avg_lead = (
+        per_wave_oblast.groupby("oblast", as_index=False)
+        .agg(
+            mean_lag=("lag_mins", "mean"),
+            median_lag=("lag_mins", "median"),
+            p25_lag=("lag_mins", lambda x: x.quantile(0.25)),
+            p75_lag=("lag_mins", lambda x: x.quantile(0.75)),
+            wave_appearances=("wave_id", "nunique"),
+        )
+        .sort_values("mean_lag")
+    )
+
+    # fraction of waves where each oblast was the *first* to trigger
+    first_per_wave = per_wave_oblast.loc[
+        per_wave_oblast.groupby("wave_id")["lag_mins"].idxmin()
+    ]
+    first_counts = (
+        first_per_wave.groupby("oblast", as_index=False)
+        .size()
+        .rename(columns={"size": "times_first"})
+    )
+    avg_lead = avg_lead.merge(first_counts, on="oblast", how="left")
+    avg_lead["times_first"] = avg_lead["times_first"].fillna(0).astype(int)
+    avg_lead["pct_first"] = (avg_lead["times_first"] / n_waves * 100).round(1)
+
+    return avg_lead, per_wave_oblast, n_waves
 
 
 def tab_velocity(df: pd.DataFrame) -> None:
-    """Render wave propagation analysis with lead-time lag vectors."""
+    """Render averaged wave propagation analysis across all waves."""
 
-    st.markdown("### Wave Propagation Analyzer")
+    st.markdown("### Average Wave Propagation Analysis")
     st.caption(
-        "Select a tactical wave to see how the alert cascaded across oblasts. "
-        "Lead-time is measured from the earliest alert in the wave."
+        "Aggregated lead-time statistics across all multi-oblast waves. "
+        "Shows how quickly each oblast typically receives an alert "
+        "relative to the first-triggered region in each wave."
     )
 
-    # wave selector
-    wave_ids = sorted(df["wave_id"].dropna().unique())
-    if not wave_ids:
-        st.warning("No waves found in the selected data range.")
+    if df.empty:
+        st.warning("No data in the selected range.")
         return
 
-    # show a summary to help the user pick a wave
-    wave_summary = (
-        df.groupby("wave_id")
-        .agg(
-            start=("started_at", "min"),
-            oblasts=("oblast", "nunique"),
-            alerts=("wave_id", "size"),
-        )
-        .reset_index()
-        .sort_values("start", ascending=False)
+    avg_lead, per_wave_oblast, n_waves = _compute_wave_stats(df)
+
+    # --- kpi row ---
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        kpi_card("Multi-Oblast Waves", f"{n_waves:,}")
+    with k2:
+        kpi_card("Oblasts Covered", f"{avg_lead['oblast'].nunique()}")
+    with k3:
+        overall_mean = avg_lead["mean_lag"].mean()
+        kpi_card("Avg Cascade Spread (min)", f"{overall_mean:.1f}")
+
+    st.markdown("---")
+
+    # --- average lead-time bar chart with iqr error bars ---
+    st.markdown("#### Mean Lead-Time Lag by Oblast")
+    st.caption(
+        "Bars show the average minutes after the first alert in a wave. "
+        "Error bars show the interquartile range (P25–P75)."
     )
 
-    # only show waves with >= 2 oblasts for interesting analysis
-    interesting = wave_summary[wave_summary["oblasts"] >= 2]
-
-    col_sel, col_info = st.columns([1, 2])
-    with col_sel:
-        default_options = interesting["wave_id"].tolist()[:200]
-        if not default_options:
-            default_options = wave_ids[:200]
-        selected_wave: int = st.selectbox(
-            "Wave ID",
-            options=default_options,
-            format_func=lambda w: f"Wave {w}",
+    sorted_lead = avg_lead.sort_values("mean_lag", ascending=True)
+    fig_avg = go.Figure()
+    fig_avg.add_trace(
+        go.Bar(
+            y=sorted_lead["oblast"],
+            x=sorted_lead["mean_lag"],
+            orientation="h",
+            marker=dict(
+                color=sorted_lead["mean_lag"],
+                colorscale=["#22c55e", "#facc15", "#ef4444"],
+                showscale=True,
+                colorbar=dict(title="Lag (min)"),
+            ),
+            error_x=dict(
+                type="data",
+                symmetric=False,
+                array=(sorted_lead["p75_lag"] - sorted_lead["mean_lag"]).clip(lower=0).tolist(),
+                arrayminus=(sorted_lead["mean_lag"] - sorted_lead["p25_lag"]).clip(lower=0).tolist(),
+                color="rgba(255,255,255,0.35)",
+                thickness=1.2,
+            ),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Mean lag: %{x:.1f} min<br>"
+                "<extra></extra>"
+            ),
         )
-
-    wave_data = df[df["wave_id"] == selected_wave].copy()
-    wave_start = wave_data["started_at"].min()
-
-    with col_info:
-        st.markdown(
-            f"**Wave {selected_wave}** — started "
-            f"`{wave_start.strftime('%Y-%m-%d %H:%M')}` Kyiv · "
-            f"**{wave_data['oblast'].nunique()}** oblasts · "
-            f"**{len(wave_data)}** alerts"
-        )
-
-    # compute lead-time lag per oblast
-    wave_data["lead_time_lag_mins"] = (
-        (wave_data["started_at"] - wave_start).dt.total_seconds() / 60.0
     )
-
-    # earliest alert per oblast within this wave
-    oblast_lead = (
-        wave_data.groupby("oblast", as_index=False)
-        .agg(
-            first_alert=("started_at", "min"),
-            lag_mins=("lead_time_lag_mins", "min"),
-            alerts_in_wave=("wave_id", "size"),
-        )
-        .sort_values("lag_mins")
-    )
-
-    # --- horizontal timeline bar ---
-    st.markdown("#### Propagation Sequence")
-    fig_prop = px.bar(
-        oblast_lead,
-        y="oblast",
-        x="lag_mins",
-        orientation="h",
-        color="lag_mins",
-        color_continuous_scale=["#22c55e", "#facc15", "#ef4444"],
-        hover_data=["first_alert", "alerts_in_wave"],
-        labels={
-            "oblast": "",
-            "lag_mins": "Lead-Time Lag (min)",
-            "first_alert": "First Alert",
-            "alerts_in_wave": "Alerts",
-        },
-    )
-    fig_prop.update_layout(
+    fig_avg.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=max(360, len(oblast_lead) * 26),
+        height=max(420, len(sorted_lead) * 26),
         margin=dict(l=0, r=0, t=10, b=10),
-        coloraxis_colorbar=dict(title="Lag (min)"),
+        xaxis_title="Mean Lead-Time Lag (min)",
     )
-    st.plotly_chart(fig_prop, use_container_width=True)
+    st.plotly_chart(fig_avg, use_container_width=True)
 
-    # --- detail table ---
-    st.markdown("#### Detailed Wave Breakdown")
-    display = wave_data[
-        ["oblast", "raion", "hromada", "level", "started_at", "duration_minutes", "lead_time_lag_mins"]
-    ].sort_values("lead_time_lag_mins")
-    st.dataframe(display.reset_index(drop=True), use_container_width=True, height=400)
+    # --- first-to-trigger frequency ---
+    st.markdown("#### First-to-Trigger Frequency")
+    st.caption(
+        "How often each oblast was the first region to sound an alert in a wave."
+    )
+    first_sorted = avg_lead.sort_values("times_first", ascending=True)
+    first_sorted = first_sorted[first_sorted["times_first"] > 0]
+
+    fig_first = px.bar(
+        first_sorted,
+        y="oblast",
+        x="times_first",
+        orientation="h",
+        color="pct_first",
+        color_continuous_scale=["#1e1e2e", COLOURS["secondary"], COLOURS["primary"]],
+        hover_data=["pct_first"],
+        labels={
+            "oblast": "",
+            "times_first": "Times First",
+            "pct_first": "% of Waves",
+        },
+    )
+    fig_first.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(360, len(first_sorted) * 26),
+        margin=dict(l=0, r=0, t=10, b=10),
+        coloraxis_colorbar=dict(title="%"),
+    )
+    st.plotly_chart(fig_first, use_container_width=True)
+
+    # --- lead-time distribution violin per top oblasts ---
+    st.markdown("#### Lead-Time Distribution (Top 12 Oblasts by Frequency)")
+    top_oblasts = (
+        avg_lead.nlargest(12, "wave_appearances")["oblast"].tolist()
+    )
+    violin_data = per_wave_oblast[per_wave_oblast["oblast"].isin(top_oblasts)]
+
+    if not violin_data.empty:
+        fig_vio = px.box(
+            violin_data,
+            x="oblast",
+            y="lag_mins",
+            color="oblast",
+            color_discrete_sequence=px.colors.qualitative.Set2,
+            labels={"oblast": "", "lag_mins": "Lead-Time Lag (min)"},
+        )
+        fig_vio.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=440,
+            margin=dict(l=0, r=0, t=10, b=10),
+            showlegend=False,
+            xaxis_tickangle=-40,
+        )
+        st.plotly_chart(fig_vio, use_container_width=True)
+
+    # --- summary table ---
+    st.markdown("#### Summary Statistics")
+    display_cols = [
+        "oblast", "mean_lag", "median_lag", "p25_lag", "p75_lag",
+        "wave_appearances", "times_first", "pct_first",
+    ]
+    display_df = avg_lead[display_cols].rename(columns={
+        "mean_lag": "Mean Lag (min)",
+        "median_lag": "Median Lag (min)",
+        "p25_lag": "P25 (min)",
+        "p75_lag": "P75 (min)",
+        "wave_appearances": "Waves Active",
+        "times_first": "Times First",
+        "pct_first": "% First",
+    })
+    st.dataframe(
+        display_df.reset_index(drop=True),
+        use_container_width=True,
+        height=460,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +734,7 @@ def main() -> None:
     """Application entry-point."""
     st.set_page_config(
         page_title="Ukraine Air Raid Alert Analytics",
-        page_icon="🇺🇦",
+        page_icon=":material/public:",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -585,7 +744,7 @@ def main() -> None:
     # header
     st.markdown(
         """
-        # 🇺🇦 Ukraine Air Raid Alert Analytics
+        # :material/public: Ukraine Air Raid Alert Analytics
         *Real-time geospatial-temporal analysis of air raid alert patterns across Ukraine*
         """,
     )
@@ -600,9 +759,9 @@ def main() -> None:
 
     # tabs
     tab1, tab2, tab3 = st.tabs([
-        "📊 Volumetric Metrics",
-        "⏳ Temporal Kinetics",
-        "🚀 Lead-Time & Velocity",
+        ":material/bar_chart: Volumetric Metrics",
+        ":material/hourglass_empty: Temporal Kinetics",
+        ":material/rocket_launch: Lead-Time & Velocity",
     ])
 
     with tab1:
