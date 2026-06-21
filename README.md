@@ -1,6 +1,6 @@
 # Ukraine Air Raid Alert Analytics
 
-https://alert.artiekra.org
+![app screenshot](https://jpcdn.it/img/ee45d6716c5d11f613c9df8aaf37ffa2.png)
 
 Interactive Streamlit dashboard for real-time geospatial and temporal analysis of air raid alert patterns across Ukraine.
 
