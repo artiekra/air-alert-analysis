@@ -88,8 +88,8 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def build_sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Render sidebar controls and return (oblast_df, full_filtered_df)."""
+def build_sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Render sidebar controls and return (chart_df, full_filtered_df, agg_level)."""
     st.sidebar.markdown("## :material/filter_alt: Filters")
 
     # date range
@@ -119,18 +119,24 @@ def build_sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         default=default_oblasts,
     )
 
-    # oblast-level slice for tab-1 kpis
-    oblast_df = full_filtered[
-        (full_filtered["level"] == "oblast")
-        & (full_filtered["oblast"].isin(selected_oblasts))
-    ]
-
     # full filtered (all levels) but within selected oblasts
     full_filtered = full_filtered[
         full_filtered["oblast"].isin(selected_oblasts)
     ]
 
-    return oblast_df, full_filtered
+    agg_level = st.sidebar.radio(
+        "Aggregation Level",
+        options=["All Levels (Micro)", "Oblast Only (Macro)"],
+        index=0,
+        help="Select whether to analyze all localized alerts (raion/hromada) or exclusively broad regional (oblast) alerts.",
+    )
+
+    if agg_level == "Oblast Only (Macro)":
+        chart_df = full_filtered[full_filtered["level"] == "oblast"]
+    else:
+        chart_df = full_filtered
+
+    return chart_df, full_filtered, agg_level
 
 
 # ---------------------------------------------------------------------------
@@ -148,26 +154,32 @@ def kpi_card(label: str, value: str, delta: Optional[str] = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def tab_volumetric(oblast_df: pd.DataFrame, full_df: pd.DataFrame) -> None:
+def tab_volumetric(chart_df: pd.DataFrame, full_df: pd.DataFrame, agg_level: str) -> None:
     """Render high-level KPI cards and paginated data table."""
 
-    st.markdown("### Key Performance Indicators *(oblast-level only)*")
-    st.caption(
-        "Metrics below are computed from **oblast-level** records only to "
-        "prevent double-counting across administrative hierarchies."
-    )
+    st.markdown(f"### Key Performance Indicators *({agg_level.split()[0].lower()}-level)*")
+    if agg_level == "Oblast Only (Macro)":
+        st.caption(
+            "Metrics below are computed from **oblast-level** records only to "
+            "prevent double-counting across administrative hierarchies."
+        )
+    else:
+        st.caption(
+            "Metrics below are computed from **all active alerts**, "
+            "representing true localized siren volume across all administrative levels."
+        )
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        kpi_card("Total Alerts (N)", f"{len(oblast_df):,}")
+        kpi_card("Total Alerts (N)", f"{len(chart_df):,}")
     with c2:
-        mean_dur = oblast_df["duration_minutes"].mean()
+        mean_dur = chart_df["duration_minutes"].mean()
         kpi_card("Mean Duration (min)", f"{mean_dur:,.1f}" if pd.notna(mean_dur) else "—")
     with c3:
-        total_hrs = oblast_df["duration_minutes"].sum() / 60.0
+        total_hrs = chart_df["duration_minutes"].sum() / 60.0
         kpi_card("Downtime Index (hrs)", f"{total_hrs:,.0f}")
     with c4:
-        unique_waves = oblast_df["wave_id"].nunique()
+        unique_waves = chart_df["wave_id"].nunique()
         kpi_card("Unique Waves", f"{unique_waves:,}")
 
     # --- alert volume by oblast (bar chart) ---
@@ -175,7 +187,7 @@ def tab_volumetric(oblast_df: pd.DataFrame, full_df: pd.DataFrame) -> None:
     st.markdown("### Alert Volume by Oblast")
 
     vol = (
-        oblast_df.groupby("oblast", as_index=False)
+        chart_df.groupby("oblast", as_index=False)
         .size()
         .rename(columns={"size": "count"})
         .sort_values("count", ascending=True)
@@ -202,7 +214,7 @@ def tab_volumetric(oblast_df: pd.DataFrame, full_df: pd.DataFrame) -> None:
     # --- monthly trend line ---
     st.markdown("### Monthly Alert Trend")
     monthly = (
-        oblast_df.groupby("month", as_index=False)
+        chart_df.groupby("month", as_index=False)
         .size()
         .rename(columns={"size": "alerts"})
         .sort_values("month")
@@ -267,13 +279,13 @@ DOW_ORDER: list[str] = [
 ]
 
 
-def tab_temporal(oblast_df: pd.DataFrame) -> None:
+def tab_temporal(chart_df: pd.DataFrame) -> None:
     """Render diurnal, day-of-week, and seasonality charts."""
 
     # --- diurnal (hourly) distribution ---
     st.markdown("### Diurnal Distribution (24 h)")
     hourly = (
-        oblast_df.groupby("hour", as_index=False)
+        chart_df.groupby("hour", as_index=False)
         .size()
         .rename(columns={"size": "alerts"})
     )
@@ -303,7 +315,7 @@ def tab_temporal(oblast_df: pd.DataFrame) -> None:
     # --- day of week ---
     st.markdown("### Day-of-Week Variation")
     dow = (
-        oblast_df.groupby("day_of_week", as_index=False)
+        chart_df.groupby("day_of_week", as_index=False)
         .agg(alerts=("day_of_week", "size"), avg_duration=("duration_minutes", "mean"))
     )
     dow["day_of_week"] = pd.Categorical(
@@ -346,7 +358,7 @@ def tab_temporal(oblast_df: pd.DataFrame) -> None:
     # --- heatmap: hour x day-of-week ---
     st.markdown("### Hour × Day-of-Week Heatmap")
     heatmap_data = (
-        oblast_df.groupby(["day_of_week", "hour"], as_index=False)
+        chart_df.groupby(["day_of_week", "hour"], as_index=False)
         .size()
         .rename(columns={"size": "alerts"})
     )
@@ -381,7 +393,7 @@ def tab_temporal(oblast_df: pd.DataFrame) -> None:
     rule = "W" if stl_period == "Weekly" else "MS"
 
     ts = (
-        oblast_df.set_index("started_at")
+        chart_df.set_index("started_at")
         .resample(rule)
         .size()
         .rename("alerts")
@@ -555,7 +567,7 @@ def tab_velocity(df: pd.DataFrame) -> None:
             orientation="h",
             marker=dict(
                 color=sorted_lead["mean_lag"],
-                colorscale=["#22c55e", "#facc15", "#ef4444"],
+                colorscale=["#ef4444", "#facc15", "#22c55e"],
                 showscale=True,
                 colorbar=dict(title="Lag (min)"),
             ),
@@ -693,7 +705,7 @@ def main() -> None:
         df = preprocess(raw)
 
     # sidebar filters
-    oblast_df, full_df = build_sidebar(df)
+    chart_df, full_df, agg_level = build_sidebar(df)
 
     # tabs
     tab1, tab2, tab3 = st.tabs([
@@ -703,10 +715,10 @@ def main() -> None:
     ])
 
     with tab1:
-        tab_volumetric(oblast_df, full_df)
+        tab_volumetric(chart_df, full_df, agg_level)
 
     with tab2:
-        tab_temporal(oblast_df)
+        tab_temporal(chart_df)
 
     with tab3:
         tab_velocity(full_df)
