@@ -209,7 +209,7 @@ def tab_volumetric(chart_df: pd.DataFrame, full_df: pd.DataFrame, agg_level: str
         margin=dict(l=0, r=0, t=10, b=10),
         coloraxis_showscale=False,
     )
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.plotly_chart(fig_vol, width="stretch")
 
     # --- monthly trend line ---
     st.markdown("### Monthly Alert Trend")
@@ -233,7 +233,7 @@ def tab_volumetric(chart_df: pd.DataFrame, full_df: pd.DataFrame, agg_level: str
         height=340,
         margin=dict(l=0, r=0, t=10, b=10),
     )
-    st.plotly_chart(fig_trend, use_container_width=True)
+    st.plotly_chart(fig_trend, width="stretch")
 
     # --- paginated data table ---
     st.markdown("---")
@@ -259,7 +259,7 @@ def tab_volumetric(chart_df: pd.DataFrame, full_df: pd.DataFrame, agg_level: str
     st.caption(f"Showing rows {start_idx + 1}–{min(end_idx, total_rows)} of {total_rows}")
     st.dataframe(
         full_df.iloc[start_idx:end_idx][available].reset_index(drop=True),
-        use_container_width=True,
+        width="stretch",
         height=460,
     )
 
@@ -310,7 +310,7 @@ def tab_temporal(chart_df: pd.DataFrame) -> None:
         coloraxis_showscale=False,
         xaxis=dict(dtick=1),
     )
-    st.plotly_chart(fig_h, use_container_width=True)
+    st.plotly_chart(fig_h, width="stretch")
 
     # --- day of week ---
     st.markdown("### Day-of-Week Variation")
@@ -353,7 +353,7 @@ def tab_temporal(chart_df: pd.DataFrame) -> None:
         yaxis2=dict(title="Avg Duration (min)", overlaying="y", side="right"),
         legend=dict(orientation="h", y=1.12),
     )
-    st.plotly_chart(fig_dow, use_container_width=True)
+    st.plotly_chart(fig_dow, width="stretch")
 
     # --- heatmap: hour x day-of-week ---
     st.markdown("### Hour × Day-of-Week Heatmap")
@@ -379,7 +379,7 @@ def tab_temporal(chart_df: pd.DataFrame) -> None:
         height=340,
         margin=dict(l=0, r=0, t=10, b=10),
     )
-    st.plotly_chart(fig_hm, use_container_width=True)
+    st.plotly_chart(fig_hm, width="stretch")
 
     # --- stl decomposition ---
     st.markdown("### Time Series Decomposition (STL)")
@@ -440,7 +440,7 @@ def tab_temporal(chart_df: pd.DataFrame) -> None:
             height=720,
             margin=dict(l=0, r=0, t=30, b=10),
         )
-        st.plotly_chart(fig_stl, use_container_width=True)
+        st.plotly_chart(fig_stl, width="stretch")
     else:
         st.warning(
             f"Not enough data for STL decomposition at {stl_period.lower()} granularity "
@@ -461,7 +461,7 @@ def tab_temporal(chart_df: pd.DataFrame) -> None:
             height=300,
             margin=dict(l=0, r=0, t=10, b=10),
         )
-        st.plotly_chart(fig_w, use_container_width=True)
+        st.plotly_chart(fig_w, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +594,7 @@ def tab_velocity(df: pd.DataFrame) -> None:
         margin=dict(l=0, r=0, t=10, b=10),
         xaxis_title="Mean Lead-Time Lag (min)",
     )
-    st.plotly_chart(fig_avg, use_container_width=True)
+    st.plotly_chart(fig_avg, width="stretch")
 
     # --- first-to-trigger frequency ---
     st.markdown("#### First-to-Trigger Frequency")
@@ -626,7 +626,7 @@ def tab_velocity(df: pd.DataFrame) -> None:
         margin=dict(l=0, r=0, t=10, b=10),
         coloraxis_colorbar=dict(title="%"),
     )
-    st.plotly_chart(fig_first, use_container_width=True)
+    st.plotly_chart(fig_first, width="stretch")
 
     # --- lead-time distribution violin per top oblasts ---
     st.markdown("#### Lead-Time Distribution (Top 12 Oblasts by Frequency)")
@@ -653,7 +653,7 @@ def tab_velocity(df: pd.DataFrame) -> None:
             showlegend=False,
             xaxis_tickangle=-40,
         )
-        st.plotly_chart(fig_vio, use_container_width=True)
+        st.plotly_chart(fig_vio, width="stretch")
 
     # --- summary table ---
     st.markdown("#### Summary Statistics")
@@ -672,7 +672,7 @@ def tab_velocity(df: pd.DataFrame) -> None:
     })
     st.dataframe(
         display_df.reset_index(drop=True),
-        use_container_width=True,
+        width="stretch",
         height=460,
     )
 

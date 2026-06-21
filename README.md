@@ -1,5 +1,7 @@
 # Ukraine Air Raid Alert Analytics
 
+https://alert.artiekra.org
+
 Interactive Streamlit dashboard for real-time geospatial and temporal analysis of air raid alert patterns across Ukraine.
 
 The app uses alert logs and applies data clustering, timezone localization, and time series decomposition to visualize alert volumes, temporal kinetics (diurnal/seasonality), and geospatial wave propagation.
@@ -9,7 +11,7 @@ The app uses alert logs and applies data clustering, timezone localization, and 
 1. **Clone and navigate to the project directory:**
 
    ```bash
-   cd air-alerts
+   cd air-alerts-analysis
    ```
 
 2. **Create and activate a virtual environment:**
